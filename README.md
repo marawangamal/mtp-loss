@@ -54,3 +54,9 @@ For more production-grade runs that are very similar to nanoGPT, I recommend loo
 ## License
 
 MIT
+
+
+# Multi-Token Loss
+
+install evaluation harness
+pip install git+https://github.com/EleutherAI/lm-evaluation-harness
