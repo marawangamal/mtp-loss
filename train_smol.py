@@ -17,7 +17,6 @@ from transformers.data.data_collator import DataCollatorForLanguageModeling
 import datasets
 import lm_eval
 from lm_eval import simple_evaluate
-import wandb
 from pytorch_lightning.loggers import WandbLogger
 
 
@@ -33,7 +32,7 @@ PRETRAINING_DS_CONFIG = {
         "path": "Salesforce/wikitext",
         "name": "wikitext-2-v1",
         "split": "test",
-        # "streaming": True,
+        "streaming": True,
     },
 }
 
@@ -120,7 +119,9 @@ class LitLM(pl.LightningModule):
     def training_step(self, batch, batch_idx):
         outputs = self(**batch)
         loss = outputs.loss
-        self.log("train_loss", loss)
+        self.log(
+            "train_loss", loss, on_step=True, on_epoch=True, prog_bar=True, logger=True
+        )
         return loss
 
     def configure_optimizers(self):
@@ -185,7 +186,11 @@ def main():
     p.add_argument("--epochs", type=int, default=1)
     args = p.parse_args()
 
-    wandb_logger = WandbLogger(project="mtl", name=get_econfig_name(args))
+    # wandb_logger = WandbLogger(
+    #     project="mtl",
+    #     name=get_econfig_name(args),
+    #     group_name=get_econfig_name(args),
+    # )
     tokenizer = AutoTokenizer.from_pretrained(args.model_name, use_fast=True)
     tokenizer.pad_token = tokenizer.eos_token
     dm = LMDataModule(tokenizer, args.dataset_name, args.batch_size, args.max_length)
@@ -195,7 +200,7 @@ def main():
         max_epochs=args.epochs,
         accelerator="auto",
         callbacks=[eval_callback],
-        logger=wandb_logger,
+        # logger=wandb_logger,
     )
     trainer.fit(model, dm)
 
