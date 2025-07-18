@@ -40,6 +40,33 @@ PRETRAINING_DS_CONFIG = {
 }
 
 
+class LitLM(pl.LightningModule):
+    def __init__(self, model_name, lr=5e-5, **kwargs):
+        super().__init__()
+        self.save_hyperparameters()
+        config = AutoConfig.from_pretrained(model_name)
+        # override config
+        for k, v in kwargs.items():
+            setattr(config, k, v)
+        self.model = AutoModelForCausalLM.from_config(config)
+
+    def forward(self, input_ids, attention_mask=None, labels=None):
+        return self.model(
+            input_ids=input_ids, attention_mask=attention_mask, labels=labels
+        )
+
+    def training_step(self, batch, batch_idx):
+        outputs = self(**batch)
+        loss = outputs.loss
+        self.log(
+            "train_loss", loss, on_step=True, on_epoch=True, prog_bar=True, logger=True
+        )
+        return loss
+
+    def configure_optimizers(self):
+        return torch.optim.AdamW(self.parameters(), lr=self.hparams["lr"])
+
+
 class LMDataModule(pl.LightningDataModule):
     def __init__(
         self,
@@ -104,32 +131,6 @@ class LMDataModule(pl.LightningDataModule):
     def train_dataloader(self):
         collator = DataCollatorForLanguageModeling(tokenizer=self.tokenizer, mlm=False)
         return DataLoader(self.dataset, batch_size=self.batch_size, collate_fn=collator)
-
-
-class LitLM(pl.LightningModule):
-    def __init__(self, model_name, lr=5e-5, **kwargs):
-        super().__init__()
-        config = AutoConfig.from_pretrained(model_name)
-        # override config
-        for k, v in kwargs.items():
-            setattr(config, k, v)
-        self.model = AutoModelForCausalLM.from_config(config)
-
-    def forward(self, input_ids, attention_mask=None, labels=None):
-        return self.model(
-            input_ids=input_ids, attention_mask=attention_mask, labels=labels
-        )
-
-    def training_step(self, batch, batch_idx):
-        outputs = self(**batch)
-        loss = outputs.loss
-        self.log(
-            "train_loss", loss, on_step=True, on_epoch=True, prog_bar=True, logger=True
-        )
-        return loss
-
-    def configure_optimizers(self):
-        return torch.optim.AdamW(self.parameters(), lr=self.hparams["lr"])
 
 
 class HellaSwagEvalCallback(pl.Callback):
@@ -198,13 +199,16 @@ def main():
     trainer = pl.Trainer(
         max_epochs=args.epochs,
         accelerator="auto",
-        callbacks=[eval_callback],
         logger=wandb_logger,
+        default_root_dir=f"experiments/{get_econfig_name(args)}",
     )
 
     # Tune lr
     tuner = Tuner(trainer)
-    tuner.lr_find(model)
+    tuner.lr_find(model, dm)
+
+    # Add evaluation callback after lr tuning
+    trainer.callbacks.append(eval_callback)
     trainer.fit(model, dm)
 
 
