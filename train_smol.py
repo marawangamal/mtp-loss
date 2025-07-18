@@ -105,7 +105,7 @@ class LMDataModule(pl.LightningDataModule):
         if self.dataset_name == "fineweb":
             self.dataset = load_from_disk("data/fineweb")
             # limit to 10 samples for testing
-            self.dataset = self.dataset.select(range(10))
+            self.dataset = self.dataset.select(range(5000))
         else:
             self.dataset = datasets.load_dataset(
                 **PRETRAINING_DS_CONFIG[self.dataset_name]
@@ -134,18 +134,19 @@ class LMDataModule(pl.LightningDataModule):
 
 
 class HellaSwagEvalCallback(pl.Callback):
-    def __init__(self, model_name, eval_every_n_epochs=1, device=None):
+    def __init__(self, model_name, eval_every_n_batches=1, device=None):
         super().__init__()
         self.model_name = model_name
-        self.eval_every_n_epochs = eval_every_n_epochs
+        self.eval_every_n_batches = eval_every_n_batches
         self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
         datasets.config.HF_DATASETS_TRUST_REMOTE_CODE = True
 
-    def on_train_epoch_end(self, trainer, pl_module):
-        epoch = trainer.current_epoch
-        if (epoch + 1) % self.eval_every_n_epochs == 0:
+    def on_train_batch_end(
+        self, trainer, pl_module, outputs, batch, batch_idx, dataloader_idx=0
+    ):
+        if (batch_idx + 1) % self.eval_every_n_batches == 0:
             print(
-                f"\n[HellaSwagEvalCallback] Evaluating on HellaSwag at epoch {epoch+1}..."
+                f"\n[HellaSwagEvalCallback] Evaluating on HellaSwag at batch {batch_idx+1}..."
             )
             results = simple_evaluate(
                 model=lm_eval.models.huggingface.HFLM(pretrained=pl_module.model),
@@ -153,25 +154,31 @@ class HellaSwagEvalCallback(pl.Callback):
                 num_fewshot=0,
                 batch_size=2,
                 gen_kwargs={"max_new_tokens": 40},
-                # limit=100,
+                limit=100,
             )
-            print(
-                f"[HellaSwagEvalCallback] HellaSwag results: {results['results']['hellaswag']}"
-            )
-            # Log HellaSwag accuracy to wandb
-            acc = acc_norm = results["results"]["hellaswag"].get("acc,none")
-            acc_norm = results["results"]["hellaswag"].get("acc_norm,none")
-            if acc_norm is not None:
-                log_dict = {
-                    "hellaswag/acc": acc,
-                    "hellaswag/acc_norm": acc_norm,
-                    "epoch": epoch + 1,
-                }
-                if (
-                    hasattr(trainer.logger, "experiment")
-                    and trainer.logger.experiment is not None
-                ):
-                    trainer.logger.experiment.log(log_dict)
+            if (
+                results
+                and results.get("results")
+                and results["results"].get("hellaswag")
+            ):
+                print(
+                    f"[HellaSwagEvalCallback] HellaSwag results: {results['results']['hellaswag']}"
+                )
+                acc = results["results"]["hellaswag"].get("acc,none")
+                acc_norm = results["results"]["hellaswag"].get("acc_norm,none")
+                if acc_norm is not None:
+                    log_dict = {
+                        "hellaswag/acc": acc,
+                        "hellaswag/acc_norm": acc_norm,
+                        "batch": batch_idx + 1,
+                    }
+                    if (
+                        hasattr(trainer.logger, "log_metrics")
+                        and trainer.logger.log_metrics is not None
+                    ):
+                        trainer.logger.log_metrics(log_dict, step=batch_idx + 1)
+            else:
+                print("[HellaSwagEvalCallback] HellaSwag results not available.")
 
 
 def get_econfig_name(args: argparse.Namespace):
@@ -195,7 +202,7 @@ def main():
     tokenizer.pad_token = tokenizer.eos_token
     dm = LMDataModule(tokenizer, args.dataset_name, args.batch_size, args.max_length)
     model = LitLM(args.model_name, vocab_size=tokenizer.vocab_size)
-    eval_callback = HellaSwagEvalCallback(args.model_name, eval_every_n_epochs=1)
+    eval_callback = HellaSwagEvalCallback(args.model_name, eval_every_n_batches=500)
     trainer = pl.Trainer(
         max_epochs=args.epochs,
         accelerator="auto",
