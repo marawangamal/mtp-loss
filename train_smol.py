@@ -13,6 +13,7 @@ import torch
 from torch.utils.data import DataLoader
 import pytorch_lightning as pl
 from pytorch_lightning.tuner import Tuner
+from pytorch_lightning.utilities import rank_zero_only
 import datasets
 import wandb
 from datasets import load_from_disk
@@ -146,6 +147,7 @@ class HellaSwagEvalCallback(pl.Callback):
         self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
         datasets.config.HF_DATASETS_TRUST_REMOTE_CODE = True
 
+    @rank_zero_only
     def on_train_batch_end(
         self, trainer, pl_module, outputs, batch, batch_idx, dataloader_idx=0
     ):
@@ -256,11 +258,10 @@ def main():
         mode="max",
         save_top_k=1,
     )
-    ckpt_time_callback = ModelCheckpoint(
+    ckpt_last_callback = ModelCheckpoint(
         dirpath=f"experiments/{get_econfig_name(args)}",
         filename="last",
-        every_n_train_steps=None,
-        train_time_interval=timedelta(minutes=30),  # Save every 30 minutes
+        every_n_train_steps=1000,
     )
 
     trainer = pl.Trainer(
@@ -276,7 +277,7 @@ def main():
         tuner.lr_find(model, dm)
 
     # Add evaluation callback after lr tuning
-    trainer.callbacks.extend([eval_callback, ckpt_best_callback, ckpt_time_callback])
+    trainer.callbacks.extend([eval_callback, ckpt_best_callback, ckpt_last_callback])
     trainer.fit(model, dm, ckpt_path=resume_ckpt)  # for auto resume, not for saving
 
 
