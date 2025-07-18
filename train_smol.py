@@ -4,6 +4,7 @@ Usage:
     python train_smol.py --model_name distilbert/distilgpt2 --dataset_name wikitext --max_length 32 --epochs 1 --batch_size 1
 """
 
+import os
 import re
 import argparse
 from datetime import timedelta
@@ -12,18 +13,19 @@ import torch
 from torch.utils.data import DataLoader
 import pytorch_lightning as pl
 from pytorch_lightning.tuner import Tuner
+import datasets
+import wandb
+from datasets import load_from_disk
+import lm_eval
+from lm_eval import simple_evaluate
+from pytorch_lightning.loggers import WandbLogger
+from pytorch_lightning.callbacks import ModelCheckpoint
 from transformers import (
     AutoConfig,
     AutoModelForCausalLM,
     AutoTokenizer,
 )
 from transformers.data.data_collator import DataCollatorForLanguageModeling
-import datasets
-from datasets import load_from_disk
-import lm_eval
-from lm_eval import simple_evaluate
-from pytorch_lightning.loggers import WandbLogger
-from pytorch_lightning.callbacks import ModelCheckpoint
 
 
 PRETRAINING_DS_CONFIG = {
@@ -185,14 +187,32 @@ class HellaSwagEvalCallback(pl.Callback):
 
 
 def get_econfig_name(args: argparse.Namespace):
-    parts = [f"{k[:1]}{v}" for k, v in args.__dict__.items()]
+    ignore_keys = ["disable_auto_resume"]
+    parts = [f"{k[:1]}{v}" for k, v in args.__dict__.items() if k not in ignore_keys]
     # remove special characters
     parts = [re.sub(r"[^a-zA-Z0-9]", "", p) for p in parts]
     return "_".join(parts)
 
 
+def lookup_ckpt(args: argparse.Namespace):
+    ckpt_path = f"experiments/{get_econfig_name(args)}/last.ckpt"
+    if not os.path.exists(ckpt_path):
+        return None
+    return ckpt_path
+
+
+def lookup_wandb_run(args: argparse.Namespace):
+    run_name = get_econfig_name(args)
+    runs = wandb.Api(timeout=15).runs("mtl")
+    matches = [r for r in runs if r.name == run_name]
+    matches.sort(key=lambda x: x.created_at, reverse=True)
+    if len(matches) == 0:
+        return None
+    return matches[0].id
+
+
 # TODO:
-# [ ] add auto resume flag
+# [x] add auto resume feature
 # [ ] push to hub
 def main():
     p = argparse.ArgumentParser()
@@ -202,15 +222,33 @@ def main():
     p.add_argument("--batch_size", type=int, default=32)
     p.add_argument("--max_length", type=int, default=1024)
     p.add_argument("--epochs", type=int, default=1)
-    # p.add_argument("--auto_resume", action="store_true")
+    p.add_argument("--disable_auto_resume", action="store_true")
     args = p.parse_args()
-    wandb_logger = WandbLogger(project="mtl", name=get_econfig_name(args))
+
+    # data
     tokenizer = AutoTokenizer.from_pretrained("gpt2", use_fast=True)
     tokenizer.pad_token = tokenizer.eos_token
     dm = LMDataModule(tokenizer, args.dataset_name, args.batch_size, args.max_length)
-    model = LitLM(args.model_name, vocab_size=tokenizer.vocab_size)
-    eval_callback = HellaSwagEvalCallback(args.model_name, eval_every_n_batches=500)
 
+    # model
+    model = LitLM(args.model_name, vocab_size=tokenizer.vocab_size)
+
+    # maybe auto resume
+    resume_ckpt = lookup_ckpt(args)
+    wandb_id = None
+    if not (args.disable_auto_resume or resume_ckpt is None):
+        print(f"[INFO] Resuming from checkpoint {resume_ckpt}.")
+        resume_ckpt = lookup_ckpt(args)
+        wandb_id = lookup_wandb_run(args)
+
+    # trainer + callbacks
+    eval_callback = HellaSwagEvalCallback(args.model_name, eval_every_n_batches=500)
+    wandb_logger = WandbLogger(
+        project="mtl",
+        name=get_econfig_name(args),
+        id=wandb_id,
+        resume="allow",
+    )
     ckpt_best_callback = ModelCheckpoint(
         dirpath=f"experiments/{get_econfig_name(args)}",
         filename="best",
@@ -233,13 +271,17 @@ def main():
     )
 
     # Tune lr
-    tuner = Tuner(trainer)
-    tuner.lr_find(model, dm)
+    if not resume_ckpt:  # skip lr tuning if resuming from checkpoint
+        tuner = Tuner(trainer)
+        tuner.lr_find(model, dm)
 
     # Add evaluation callback after lr tuning
     trainer.callbacks.extend([eval_callback, ckpt_best_callback, ckpt_time_callback])
-    trainer.fit(model, dm)
+    trainer.fit(model, dm, ckpt_path=resume_ckpt)  # for auto resume, not for saving
 
 
 if __name__ == "__main__":
     main()
+
+
+# Epoch 0:   2%|██▉       | 5337/315209 [54:08<52:23:38,  1.64it/s, v_num=v874, train_loss_step=4.630]^C
