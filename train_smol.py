@@ -8,13 +8,16 @@ import argparse
 import torch
 from torch.utils.data import DataLoader
 import pytorch_lightning as pl
+from pytorch_lightning.tuner import Tuner
 from transformers import (
     AutoConfig,
     AutoModelForCausalLM,
     AutoTokenizer,
 )
 from transformers.data.data_collator import DataCollatorForLanguageModeling
+
 import datasets
+from datasets import load_from_disk
 import lm_eval
 from lm_eval import simple_evaluate
 from pytorch_lightning.loggers import WandbLogger
@@ -46,6 +49,7 @@ class LMDataModule(pl.LightningDataModule):
         max_length,
     ):
         super().__init__()
+        self.save_hyperparameters()
         self.dataset_name = dataset_name
         self.tokenizer = tokenizer
         self.batch_size = batch_size
@@ -71,34 +75,31 @@ class LMDataModule(pl.LightningDataModule):
         return result
 
     def setup(self, stage=None):
-        self.dataset = datasets.load_dataset(**PRETRAINING_DS_CONFIG[self.dataset_name])
-        self.dataset = self.dataset.filter(
-            lambda x: x["text"] and x["text"].strip() != ""
-        )
-        self.dataset = self.dataset.shuffle(seed=42)
-        # self.tokenized = self.dataset.map(
-        #     lambda x: self.tokenizer(
-        #         x["text"],
-        #         truncation=True,
-        #         max_length=self.max_length,
-        #         return_tensors=None,
-        #     ),
-        #     batched=True,
-        #     remove_columns=self.dataset.features.keys(),
-        # )
+        if self.dataset_name == "fineweb":
+            self.dataset = load_from_disk("data/fineweb")
+            # limit to 10 samples for testing
+            self.dataset = self.dataset.select(range(10))
+        else:
+            self.dataset = datasets.load_dataset(
+                **PRETRAINING_DS_CONFIG[self.dataset_name]
+            )
+            self.dataset = self.dataset.filter(
+                lambda x: x["text"] and x["text"].strip() != ""
+            )
+            self.dataset = self.dataset.shuffle(seed=42)
 
-        # Tokenize
-        self.dataset = self.dataset.map(
-            lambda x: self.tokenizer(x["text"]),
-            remove_columns=["text"],
-            batched=True,
-        )
+            # Tokenize
+            self.dataset = self.dataset.map(
+                lambda x: self.tokenizer(x["text"]),
+                remove_columns=["text"],
+                batched=True,
+            )
 
-        # Group instead of padding/truncation
-        self.dataset = self.dataset.map(
-            lambda x: self.group_texts(x),
-            batched=True,
-        )
+            # Group instead of padding/truncation
+            self.dataset = self.dataset.map(
+                lambda x: self.group_texts(x),
+                batched=True,
+            )
 
     def train_dataloader(self):
         collator = DataCollatorForLanguageModeling(tokenizer=self.tokenizer, mlm=False)
@@ -106,9 +107,12 @@ class LMDataModule(pl.LightningDataModule):
 
 
 class LitLM(pl.LightningModule):
-    def __init__(self, model_name):
+    def __init__(self, model_name, lr=5e-5, **kwargs):
         super().__init__()
         config = AutoConfig.from_pretrained(model_name)
+        # override config
+        for k, v in kwargs.items():
+            setattr(config, k, v)
         self.model = AutoModelForCausalLM.from_config(config)
 
     def forward(self, input_ids, attention_mask=None, labels=None):
@@ -125,7 +129,7 @@ class LitLM(pl.LightningModule):
         return loss
 
     def configure_optimizers(self):
-        return torch.optim.AdamW(self.parameters(), lr=5e-5)
+        return torch.optim.AdamW(self.parameters(), lr=self.hparams["lr"])
 
 
 class HellaSwagEvalCallback(pl.Callback):
@@ -181,27 +185,26 @@ def main():
     p.add_argument("--model_name", type=str, default="HuggingFaceTB/SmolLM-135M")
     p.add_argument("--dataset_name", type=str, default="fineweb")
     p.add_argument("--dataset_config", type=str, default="edu")
-    p.add_argument("--batch_size", type=int, default=2)
+    p.add_argument("--batch_size", type=int, default=32)
     p.add_argument("--max_length", type=int, default=1024)
     p.add_argument("--epochs", type=int, default=1)
     args = p.parse_args()
-
-    # wandb_logger = WandbLogger(
-    #     project="mtl",
-    #     name=get_econfig_name(args),
-    #     group_name=get_econfig_name(args),
-    # )
-    tokenizer = AutoTokenizer.from_pretrained(args.model_name, use_fast=True)
+    wandb_logger = WandbLogger(project="mtl", name=get_econfig_name(args))
+    tokenizer = AutoTokenizer.from_pretrained("gpt2", use_fast=True)
     tokenizer.pad_token = tokenizer.eos_token
     dm = LMDataModule(tokenizer, args.dataset_name, args.batch_size, args.max_length)
-    model = LitLM(args.model_name)
+    model = LitLM(args.model_name, vocab_size=tokenizer.vocab_size)
     eval_callback = HellaSwagEvalCallback(args.model_name, eval_every_n_epochs=1)
     trainer = pl.Trainer(
         max_epochs=args.epochs,
         accelerator="auto",
         callbacks=[eval_callback],
-        # logger=wandb_logger,
+        logger=wandb_logger,
     )
+
+    # Tune lr
+    tuner = Tuner(trainer)
+    tuner.lr_find(model)
     trainer.fit(model, dm)
 
 
