@@ -4,7 +4,10 @@ Usage:
     python train_smol.py --model_name distilbert/distilgpt2 --dataset_name wikitext --max_length 32 --epochs 1 --batch_size 1
 """
 
+import re
 import argparse
+from datetime import timedelta
+
 import torch
 from torch.utils.data import DataLoader
 import pytorch_lightning as pl
@@ -15,12 +18,12 @@ from transformers import (
     AutoTokenizer,
 )
 from transformers.data.data_collator import DataCollatorForLanguageModeling
-
 import datasets
 from datasets import load_from_disk
 import lm_eval
 from lm_eval import simple_evaluate
 from pytorch_lightning.loggers import WandbLogger
+from pytorch_lightning.callbacks import ModelCheckpoint
 
 
 PRETRAINING_DS_CONFIG = {
@@ -104,8 +107,8 @@ class LMDataModule(pl.LightningDataModule):
     def setup(self, stage=None):
         if self.dataset_name == "fineweb":
             self.dataset = load_from_disk("data/fineweb")
-            # limit to 10 samples for testing
-            self.dataset = self.dataset.select(range(5000))
+            # limit samples for testing
+            # self.dataset = self.dataset.select(range(50000))
         else:
             self.dataset = datasets.load_dataset(
                 **PRETRAINING_DS_CONFIG[self.dataset_name]
@@ -168,12 +171,12 @@ class HellaSwagEvalCallback(pl.Callback):
                 acc_norm = results["results"]["hellaswag"].get("acc_norm,none")
                 if acc_norm is not None:
                     log_dict = {
-                        "hellaswag/acc": acc,
-                        "hellaswag/acc_norm": acc_norm,
+                        "eval/hellaswag_acc": acc,
+                        "eval/hellaswag_acc_norm": acc_norm,
                         "batch": batch_idx + 1,
                     }
                     if (
-                        hasattr(trainer.logger, "log_metrics")
+                        hasattr(trainer.logger, "log")
                         and trainer.logger.log_metrics is not None
                     ):
                         trainer.logger.log_metrics(log_dict, step=batch_idx + 1)
@@ -182,12 +185,15 @@ class HellaSwagEvalCallback(pl.Callback):
 
 
 def get_econfig_name(args: argparse.Namespace):
-    name = ""
-    for k, v in args.__dict__.items():
-        name += f"-{k[:1]}{v}"
-    return name
+    parts = [f"{k[:1]}{v}" for k, v in args.__dict__.items()]
+    # remove special characters
+    parts = [re.sub(r"[^a-zA-Z0-9]", "", p) for p in parts]
+    return "_".join(parts)
 
 
+# TODO:
+# [ ] add auto resume flag
+# [ ] push to hub
 def main():
     p = argparse.ArgumentParser()
     p.add_argument("--model_name", type=str, default="HuggingFaceTB/SmolLM-135M")
@@ -196,6 +202,7 @@ def main():
     p.add_argument("--batch_size", type=int, default=32)
     p.add_argument("--max_length", type=int, default=1024)
     p.add_argument("--epochs", type=int, default=1)
+    # p.add_argument("--auto_resume", action="store_true")
     args = p.parse_args()
     wandb_logger = WandbLogger(project="mtl", name=get_econfig_name(args))
     tokenizer = AutoTokenizer.from_pretrained("gpt2", use_fast=True)
@@ -203,6 +210,21 @@ def main():
     dm = LMDataModule(tokenizer, args.dataset_name, args.batch_size, args.max_length)
     model = LitLM(args.model_name, vocab_size=tokenizer.vocab_size)
     eval_callback = HellaSwagEvalCallback(args.model_name, eval_every_n_batches=500)
+
+    ckpt_best_callback = ModelCheckpoint(
+        dirpath=f"experiments/{get_econfig_name(args)}",
+        filename="best",
+        monitor="eval/hellaswag_acc_norm",
+        mode="max",
+        save_top_k=1,
+    )
+    ckpt_time_callback = ModelCheckpoint(
+        dirpath=f"experiments/{get_econfig_name(args)}",
+        filename="last",
+        every_n_train_steps=None,
+        train_time_interval=timedelta(minutes=30),  # Save every 30 minutes
+    )
+
     trainer = pl.Trainer(
         max_epochs=args.epochs,
         accelerator="auto",
@@ -215,7 +237,7 @@ def main():
     tuner.lr_find(model, dm)
 
     # Add evaluation callback after lr tuning
-    trainer.callbacks.append(eval_callback)
+    trainer.callbacks.extend([eval_callback, ckpt_best_callback, ckpt_time_callback])
     trainer.fit(model, dm)
 
 
