@@ -29,6 +29,8 @@ from transformers import (
 from transformers.data.data_collator import DataCollatorForLanguageModeling
 
 
+from mtp.mthf import MultiTokenHFConfig, MultiTokenHF
+
 PRETRAINING_DS_CONFIG = {
     "fineweb": {
         "path": "HuggingFaceFW/fineweb",
@@ -50,11 +52,17 @@ class LitLM(pl.LightningModule):
     def __init__(self, model_name, lr=5e-5, **kwargs):
         super().__init__()
         self.save_hyperparameters()
-        config = AutoConfig.from_pretrained(model_name)
-        # override config
-        for k, v in kwargs.items():
-            setattr(config, k, v)
-        self.model = AutoModelForCausalLM.from_config(config)
+
+        # Old
+        # config = AutoConfig.from_pretrained(model_name)
+        # # override config
+        # for k, v in kwargs.items():
+        #     setattr(config, k, v)
+        # self.model = AutoModelForCausalLM.from_config(config)
+
+        # New
+        config = MultiTokenHFConfig(model_name=model_name)
+        self.model = MultiTokenHF(config, **kwargs)
 
     def forward(self, input_ids, attention_mask=None, labels=None):
         return self.model(
@@ -219,6 +227,7 @@ def lookup_wandb_run(args: argparse.Namespace):
 def main():
     p = argparse.ArgumentParser()
     p.add_argument("--model_name", type=str, default="HuggingFaceTB/SmolLM-135M")
+    p.add_argument("--model_head", type=str, default="stp")  # new
     p.add_argument("--dataset_name", type=str, default="fineweb")
     p.add_argument("--dataset_config", type=str, default="edu")
     p.add_argument("--batch_size", type=int, default=32)
@@ -233,7 +242,11 @@ def main():
     dm = LMDataModule(tokenizer, args.dataset_name, args.batch_size, args.max_length)
 
     # model
-    model = LitLM(args.model_name, vocab_size=tokenizer.vocab_size)
+    model = LitLM(
+        args.model_name,
+        model_head=args.model_head,
+        vocab_size=tokenizer.vocab_size,
+    )
 
     # maybe auto resume
     resume_ckpt = lookup_ckpt(args)

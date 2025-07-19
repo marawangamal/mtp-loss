@@ -1,4 +1,5 @@
 import copy
+from typing import Optional
 import torch
 import torch.nn as nn
 from transformers.configuration_utils import PretrainedConfig
@@ -23,6 +24,8 @@ class MultiTokenHFConfig(PretrainedConfig):
         model_head: ModelHeadType = "stp",
         pretrained: bool = False,
         lambda_mhead: float = 1.0,  # weight for mhead loss
+        embedding_dim: Optional[int] = None,
+        vocab_size: Optional[int] = None,
         **kwargs,
     ):
         super().__init__(**kwargs)
@@ -34,26 +37,35 @@ class MultiTokenHFConfig(PretrainedConfig):
         self.lambda_mhead = lambda_mhead
 
 
+# TODO: standardize naming scheme (vocab_size vs d_output)
 class MultiTokenHF(PreTrainedModel, GenerationMixin):
     config_class = MultiTokenHFConfig
     supports_gradient_checkpointing = True
 
-    def __init__(self, config: MultiTokenHFConfig):
+    def __init__(self, config: MultiTokenHFConfig, **kwargs):
         super().__init__(config)
 
         # Set dims
-        self.vocab_size, self.embedding_dim = get_model_dims(config.model_name)
+        vocab_size, embedding_dim = get_model_dims(config.model_name)
+        self.vocab_size = kwargs.get("vocab_size", vocab_size)
+        self.embedding_dim = kwargs.get("embedding_dim", embedding_dim)
         self.horizon = config.horizon
 
-        # Set backbone
-        self.backbone, self.lm_head = get_backbone(config.model_name, config.pretrained)
+        # override config
+        for k, v in kwargs.items():
+            setattr(config, k, v)
 
-        # Set multi-token head
-        mhead_config = AbstractDisributionHeadConfig(
-            d_model=self.embedding_dim,
-            d_output=self.vocab_size,
+        # Set backbone
+        self.backbone, self.lm_head = get_backbone(
+            config.model_name, config.pretrained, **kwargs
         )
-        self.mhead = MHEADS[config.model_head](mhead_config)
+
+        # # Set multi-token head
+        # self.mhead_config = AbstractDisributionHeadConfig(
+        #     d_model=self.embedding_dim,
+        #     d_output=self.vocab_size,
+        # )
+        # self.mhead = MHEADS[config.model_head](self.mhead_config)
 
     def get_output_embeddings(self):
         return self.lm_head.weight
@@ -130,15 +142,16 @@ def get_model_dims(model_name: str) -> tuple[int, int]:
 
 
 def get_backbone(
-    model_name: str, pretrained: bool = False
+    model_name: str, pretrained: bool = False, **kwargs
 ) -> tuple[torch.nn.Module, torch.nn.Module]:
     """Get a randomly initialized backbone of a HuggingFace model."""
     if pretrained:
         hf_model = AutoModelForCausalLM.from_pretrained(model_name)
     else:
-        hf_model = AutoModelForCausalLM.from_config(
-            AutoConfig.from_pretrained(model_name)
-        )
+        config = AutoConfig.from_pretrained(model_name)
+        for k, v in kwargs.items():
+            setattr(config, k, v)
+        hf_model = AutoModelForCausalLM.from_config(config)
 
     if hasattr(hf_model, "transformer"):
         return hf_model.transformer, hf_model.lm_head
