@@ -3,10 +3,13 @@ import math
 import time
 import inspect
 from dataclasses import dataclass
+from typing import Literal, Optional
 import torch
 import torch.nn as nn
 from torch.nn import functional as F
 from hellaswag import render_example, iterate_examples
+from mtp import MHEADS
+from mtp._abc import AbstractDisributionHeadConfig
 
 # -----------------------------------------------------------------------------
 
@@ -92,6 +95,8 @@ class GPTConfig:
     n_layer: int = 12  # number of layers
     n_head: int = 12  # number of heads
     n_embd: int = 768  # embedding dimension
+    reg_head: Optional[Literal["stp"]] = None
+    reg_lambda: float = 1.0
 
 
 class GPT(nn.Module):
@@ -109,6 +114,13 @@ class GPT(nn.Module):
             )
         )
         self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias=False)
+        self.reg_head = None
+        if config.reg_head == "stp":
+            self.reg_head = MHEADS[config.reg_head](
+                AbstractDisributionHeadConfig(
+                    d_model=config.n_embd, d_output=config.vocab_size
+                )
+            )
 
         # weight sharing scheme
         self.transformer.wte.weight = self.lm_head.weight
@@ -147,6 +159,9 @@ class GPT(nn.Module):
         loss = None
         if targets is not None:
             loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1))
+            if self.reg_head is not None:
+                reg_loss = self.reg_head(x, targets)
+                loss += reg_loss * self.config.reg_lambda
         return logits, loss
 
     @classmethod
