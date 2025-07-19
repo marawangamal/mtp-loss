@@ -180,7 +180,7 @@ class HellaSwagEvalCallback(pl.Callback):
                         "batch": batch_idx + 1,
                     }
                     if (
-                        hasattr(trainer.logger, "log")
+                        hasattr(trainer.logger, "log_metrics")
                         and trainer.logger.log_metrics is not None
                     ):
                         trainer.logger.log_metrics(log_dict, step=batch_idx + 1)

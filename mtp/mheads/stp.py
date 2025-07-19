@@ -1,6 +1,6 @@
 import torch
 
-from mtp.mheads._abc import (
+from ._abc import (
     AbstractDisributionHead,
     AbstractDisributionHeadConfig,
     AbstractDisributionHeadOutput,

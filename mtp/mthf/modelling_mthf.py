@@ -8,13 +8,12 @@ from transformers.generation.utils import GenerationMixin
 from transformers.modeling_outputs import CausalLMOutput
 
 from mtp.mheads import MHEADS
-from mtp._utils import get_windowed_input_ids
-from mtp._types import ModelHeadType, PositivityFuncType
+from mtp._types import ModelHeadType
 from mtp.mheads._abc import AbstractDisributionHeadConfig
 
 
 class MultiTokenHFConfig(PretrainedConfig):
-    model_type = "multi_token_llama"
+    model_type = "mthf"
 
     def __init__(
         self,
@@ -47,19 +46,14 @@ class MultiTokenHF(PreTrainedModel, GenerationMixin):
         self.horizon = config.horizon
 
         # Set backbone
-        self.base, self.lm_head = get_backbone(config.model_name, config.pretrained)
+        self.backbone, self.lm_head = get_backbone(config.model_name, config.pretrained)
 
         # Set multi-token head
         mhead_config = AbstractDisributionHeadConfig(
             d_model=self.embedding_dim,
             d_output=self.vocab_size,
         )
-        if config.pretrained:
-            self.mhead = MHEADS[config.model_head].from_pretrained(
-                copy.deepcopy(self.lm_head), mhead_config
-            )
-        else:
-            self.mhead = MHEADS[config.model_head](mhead_config)
+        self.mhead = MHEADS[config.model_head](mhead_config)
 
     def get_output_embeddings(self):
         return self.lm_head.weight
@@ -119,8 +113,8 @@ class MultiTokenHF(PreTrainedModel, GenerationMixin):
             return CausalLMOutput(loss=loss_lm, logits=logits)
 
         # For inference: return logits from last position
-        output = self.lm_head(z[:, -1:, :])  # (B, 1, D)
-        return CausalLMOutput(logits=output.logits)
+        logits = self.lm_head(z[:, -1:, :])  # (B, 1, D)
+        return CausalLMOutput(logits=logits)
 
 
 def get_model_dims(model_name: str) -> tuple[int, int]:
