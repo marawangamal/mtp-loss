@@ -55,11 +55,13 @@ class MultiTokenHF(PreTrainedModel, GenerationMixin):
         vocab_size, embedding_dim = get_model_dims(config.model_name)
         self.embedding_dim = embedding_dim
         self.horizon = config.horizon
-        self.vocab_size = config.horizon or vocab_size  # override if provided
+        self.vocab_size = config.vocab_size or vocab_size  # override if provided
 
         # Set backbone
         self.backbone, _ = get_backbone(
-            config.model_name, config.pretrained, vocab_size=self.vocab_size
+            config.model_name,
+            config.pretrained,
+            vocab_size=self.vocab_size,
         )
 
         # Set multi-token head
@@ -70,6 +72,7 @@ class MultiTokenHF(PreTrainedModel, GenerationMixin):
             rank=config.rank,
         )
         self.mhead = MHEADS[config.model_head](self.mhead_config)
+        self.mhead.to(next(self.backbone.parameters()).dtype)
 
         # Compatibility with HF
         self.name_or_path = self.backbone.name_or_path
