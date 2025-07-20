@@ -8,11 +8,15 @@ from transformers import AutoModelForCausalLM, AutoConfig
 from transformers.generation.utils import GenerationMixin
 from transformers.modeling_outputs import CausalLMOutput
 
+from mtp._utils import get_windowed_input_ids
 from mtp.mheads import MHEADS
 from mtp._types import ModelHeadType
 from mtp.mheads._abc import AbstractDisributionHeadConfig
 
 
+# TODO:
+# [ ] standardize naming scheme (vocab_size vs d_output)
+# [ ] tie-weights between lm_head and mhead decoders
 class MultiTokenHFConfig(PretrainedConfig):
     model_type = "multi_token_hfmodel"
 
@@ -37,7 +41,6 @@ class MultiTokenHFConfig(PretrainedConfig):
         self.lambda_mhead = lambda_mhead
 
 
-# TODO: standardize naming scheme (vocab_size vs d_output)
 class MultiTokenHF(PreTrainedModel, GenerationMixin):
     config_class = MultiTokenHFConfig
     supports_gradient_checkpointing = True
@@ -50,6 +53,7 @@ class MultiTokenHF(PreTrainedModel, GenerationMixin):
         self.vocab_size = kwargs.get("vocab_size", vocab_size)
         self.embedding_dim = kwargs.get("embedding_dim", embedding_dim)
         self.horizon = config.horizon
+        self.rank = config.rank
 
         # override config
         for k, v in kwargs.items():
@@ -60,12 +64,14 @@ class MultiTokenHF(PreTrainedModel, GenerationMixin):
             config.model_name, config.pretrained, **kwargs
         )
 
-        # # Set multi-token head
-        # self.mhead_config = AbstractDisributionHeadConfig(
-        #     d_model=self.embedding_dim,
-        #     d_output=self.vocab_size,
-        # )
-        # self.mhead = MHEADS[config.model_head](self.mhead_config)
+        # Set multi-token head
+        self.mhead_config = AbstractDisributionHeadConfig(
+            d_model=self.embedding_dim,
+            d_output=self.vocab_size,
+            horizon=self.horizon,
+            rank=self.rank,
+        )
+        self.mhead = MHEADS[config.model_head](self.mhead_config)
 
         # Compatibility with HF
         self.name_or_path = self.backbone.name_or_path
@@ -125,7 +131,27 @@ class MultiTokenHF(PreTrainedModel, GenerationMixin):
                 y_lm.reshape(-1),
                 reduction="mean",
             )
-            return CausalLMOutput(loss=loss_lm, logits=logits)
+
+            # Multi-token head loss
+            loss_mhead = 0.0
+            if self.mhead is not None:
+                # Slice inputs: (B, T-H, D)
+                z_mt = z[:, : -self.config.horizon]  # (B, T-H, D)
+                # Create targets: (B*(T-H), H)
+                y_mt = get_windowed_input_ids(input_ids, self.config.horizon)
+                if self.horizon > 1:
+                    shift = torch.randint(0, self.horizon, (1,)).item()
+                    z_mt = z_mt[:, shift :: self.horizon]
+                    y_mt = y_mt[:, shift :: self.horizon]
+
+                # Merge batch and sequence dims
+                z_mt = z_mt.reshape(-1, self.embedding_dim)  # (B*(T-H), D)
+                y_mt = y_mt.reshape(-1)  # (B*(T-H),)
+                output = self.mhead(z_mt, y_mt)
+                loss_mhead = output.loss.mean()
+
+            loss = loss_lm + self.config.lambda_mhead * loss_mhead
+            return CausalLMOutput(loss=loss, logits=logits)
 
         # For inference: return logits from last position
         # logits = self.lm_head(z[:, -1:, :])  # (B, 1, D)
@@ -150,12 +176,14 @@ def get_backbone(
 ) -> tuple[torch.nn.Module, torch.nn.Module]:
     """Get a randomly initialized backbone of a HuggingFace model."""
     if pretrained:
-        hf_model = AutoModelForCausalLM.from_pretrained(model_name)
+        hf_model = AutoModelForCausalLM.from_pretrained(
+            model_name, torch_dtype=torch.float32
+        )
     else:
         config = AutoConfig.from_pretrained(model_name)
         for k, v in kwargs.items():
             setattr(config, k, v)
-        hf_model = AutoModelForCausalLM.from_config(config)
+        hf_model = AutoModelForCausalLM.from_config(config, torch_dtype=torch.float32)
 
     if hasattr(hf_model, "transformer"):
         return hf_model.transformer, hf_model.lm_head
