@@ -14,7 +14,7 @@ from mtp.mheads._abc import AbstractDisributionHeadConfig
 
 
 class MultiTokenHFConfig(PretrainedConfig):
-    model_type = "mthf"
+    model_type = "multi_token_hfmodel"
 
     def __init__(
         self,
@@ -67,8 +67,11 @@ class MultiTokenHF(PreTrainedModel, GenerationMixin):
         # )
         # self.mhead = MHEADS[config.model_head](self.mhead_config)
 
+        # Compatibility with HF
+        self.name_or_path = self.backbone.name_or_path
+
     def get_output_embeddings(self):
-        return self.lm_head.weight
+        return self.lm_head
 
     def get_input_embeddings(self):
         # Try to get input embeddings from the backbone
@@ -125,7 +128,8 @@ class MultiTokenHF(PreTrainedModel, GenerationMixin):
             return CausalLMOutput(loss=loss_lm, logits=logits)
 
         # For inference: return logits from last position
-        logits = self.lm_head(z[:, -1:, :])  # (B, 1, D)
+        # logits = self.lm_head(z[:, -1:, :])  # (B, 1, D)
+        logits = self.lm_head(z)
         return CausalLMOutput(logits=logits)
 
 

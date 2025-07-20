@@ -257,7 +257,7 @@ def main():
         wandb_id = lookup_wandb_run(args)
 
     # trainer + callbacks
-    eval_callback = HellaSwagEvalCallback(args.model_name, eval_every_n_batches=500)
+    eval_callback = HellaSwagEvalCallback(args.model_name, eval_every_n_batches=10)
     wandb_logger = WandbLogger(
         project="mtl",
         name=get_econfig_name(args),
