@@ -11,6 +11,7 @@ from transformers.modeling_outputs import CausalLMOutput
 from mtp.mheads import MHEADS
 from mtp._types import ModelHeadType
 from mtp.mheads._abc import AbstractDisributionHeadConfig
+from mtp.mheads._utils import get_windowed_input_ids
 
 
 class MultiTokenHFConfig(PretrainedConfig):
@@ -24,17 +25,16 @@ class MultiTokenHFConfig(PretrainedConfig):
         model_head: ModelHeadType = "stp",
         pretrained: bool = False,
         lambda_mhead: float = 1.0,  # weight for mhead loss
-        embedding_dim: Optional[int] = None,
         vocab_size: Optional[int] = None,
-        **kwargs,
     ):
-        super().__init__(**kwargs)
+        super().__init__()
         self.model_name = model_name
         self.horizon = horizon
         self.model_head = model_head
         self.rank = rank
         self.pretrained = pretrained
         self.lambda_mhead = lambda_mhead
+        self.vocab_size = vocab_size
 
 
 # TODO: standardize naming scheme (vocab_size vs d_output)
@@ -42,36 +42,40 @@ class MultiTokenHF(PreTrainedModel, GenerationMixin):
     config_class = MultiTokenHFConfig
     supports_gradient_checkpointing = True
 
-    def __init__(self, config: MultiTokenHFConfig, **kwargs):
+    def __init__(self, config: MultiTokenHFConfig):
+        """Multi-token HuggingFace model.
+
+        Args:
+            config (MultiTokenHFConfig): Config for MultiTokenHF.
+
+        """
         super().__init__(config)
 
         # Set dims
         vocab_size, embedding_dim = get_model_dims(config.model_name)
-        self.vocab_size = kwargs.get("vocab_size", vocab_size)
-        self.embedding_dim = kwargs.get("embedding_dim", embedding_dim)
+        self.embedding_dim = embedding_dim
         self.horizon = config.horizon
-
-        # override config
-        for k, v in kwargs.items():
-            setattr(config, k, v)
+        self.vocab_size = config.horizon or vocab_size  # override if provided
 
         # Set backbone
-        self.backbone, self.lm_head = get_backbone(
-            config.model_name, config.pretrained, **kwargs
+        self.backbone, _ = get_backbone(
+            config.model_name, config.pretrained, vocab_size=self.vocab_size
         )
 
-        # # Set multi-token head
-        # self.mhead_config = AbstractDisributionHeadConfig(
-        #     d_model=self.embedding_dim,
-        #     d_output=self.vocab_size,
-        # )
-        # self.mhead = MHEADS[config.model_head](self.mhead_config)
+        # Set multi-token head
+        self.mhead_config = AbstractDisributionHeadConfig(
+            d_model=self.embedding_dim,
+            d_output=self.vocab_size,
+            horizon=config.horizon,
+            rank=config.rank,
+        )
+        self.mhead = MHEADS[config.model_head](self.mhead_config)
 
         # Compatibility with HF
         self.name_or_path = self.backbone.name_or_path
 
     def get_output_embeddings(self):
-        return self.lm_head
+        return self.mhead.get_output_embeddings()
 
     def get_input_embeddings(self):
         # Try to get input embeddings from the backbone
@@ -83,7 +87,7 @@ class MultiTokenHF(PreTrainedModel, GenerationMixin):
             raise NotImplementedError("Input embeddings not found in backbone.")
 
     def set_output_embeddings(self, new_embeddings):
-        self.lm_head.weight = new_embeddings
+        self.mhead.set_output_embeddings(new_embeddings)
 
     def set_input_embeddings(self, new_embeddings):
         if hasattr(self.backbone, "wte"):
@@ -104,33 +108,42 @@ class MultiTokenHF(PreTrainedModel, GenerationMixin):
         # No adjustment by default
         return logits
 
-    def forward(self, input_ids, labels=None, use_memory_efficient_loss=True, **kwargs):
+    def forward(
+        self, input_ids, labels=None, use_memory_efficient_loss=False, **kwargs
+    ):
         # Get hidden states from model
         outputs = self.backbone(input_ids=input_ids, **kwargs)
-        z = outputs.last_hidden_state  # Hidden states. Shape: (B, T, D)
+        z = outputs.last_hidden_state  # (B, T-H, D)
 
         # Compute loss if labels provided
         if labels is not None:
-            T, V = z.shape[1], self.vocab_size
-            if T <= self.horizon:
+            seq_len = input_ids.shape[1]
+            if seq_len <= self.horizon:
                 raise ValueError(
-                    f"Input sequence length ({T}) must be greater than horizon ({self.horizon}) for loss computation."
+                    f"Input sequence length ({seq_len}) must be greater than horizon ({self.horizon}) for loss computation."
                 )
-            # Remove last position since we can't predict it
-            z_lm = z[:, :-1]  # (B, T-1, D)
-            y_lm = input_ids[:, 1:]  # (B, T-1)
-            logits = self.lm_head(z_lm)
-            loss_lm = torch.nn.functional.cross_entropy(
-                logits.reshape(-1, V),
-                y_lm.reshape(-1),
-                reduction="mean",
-            )
-            return CausalLMOutput(loss=loss_lm, logits=logits)
+            # Remove last H positions since we can't predict them
+            x = z[:, : -self.horizon, :]  # (B, T-H, D)
+
+            # Create targets: (B*(T-H), H)
+            # TODO: move shift logic to mhead to support simultaneous training of conid/joint dists
+            y = get_windowed_input_ids(input_ids, self.horizon)
+            if use_memory_efficient_loss and self.horizon > 1:
+                shift = torch.randint(0, self.horizon, (1,)).item()
+                x = x[:, shift :: self.horizon]
+                y = y[:, shift :: self.horizon]
+
+            # Merge batch and sequence dims
+            x = x.reshape(-1, self.embedding_dim)  # (B*(T-H), D)
+            y = y.reshape(-1)  # (B*(T-H),)
+            output = self.mhead(x, y)
+            loss = output.loss.mean()
+            logits = output.logits
+            return CausalLMOutput(loss=loss, logits=logits)
 
         # For inference: return logits from last position
-        # logits = self.lm_head(z[:, -1:, :])  # (B, 1, D)
-        logits = self.lm_head(z)
-        return CausalLMOutput(logits=logits)
+        output = self.mhead(z[:, -1:, :])
+        return CausalLMOutput(logits=output.logits)
 
 
 def get_model_dims(model_name: str) -> tuple[int, int]:

@@ -4,6 +4,9 @@ Usage:
     python train_smol.py --model_name distilbert/distilgpt2 --dataset_name wikitext --max_length 32 --epochs 1 --batch_size 1
 """
 
+# TODO:
+# [ ] add qualitative evaluation / logging (ie., x="the world is")
+
 import os
 import re
 import argparse
@@ -257,7 +260,7 @@ def main():
         wandb_id = lookup_wandb_run(args)
 
     # trainer + callbacks
-    eval_callback = HellaSwagEvalCallback(args.model_name, eval_every_n_batches=10)
+    eval_callback = HellaSwagEvalCallback(args.model_name, eval_every_n_batches=500)
     wandb_logger = WandbLogger(
         project="mtl",
         name=get_econfig_name(args),
