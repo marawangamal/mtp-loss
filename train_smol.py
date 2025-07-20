@@ -34,6 +34,7 @@ from transformers.data.data_collator import DataCollatorForLanguageModeling
 # [ ] simply replace lm_head with mhead (add @property .weight for compatibility)
 
 from mtp._types import ModelHeadType
+from mtp.mheads import MHEADS
 from mtp.mthf import MultiTokenHFConfig, MultiTokenHF
 
 PRETRAINING_DS_CONFIG = {
@@ -237,7 +238,7 @@ def main():
     p = argparse.ArgumentParser()
     # model params
     p.add_argument("--model_name", type=str, default="HuggingFaceTB/SmolLM-135M")
-    p.add_argument("--model_head", type=str, default="stp")  # new
+    p.add_argument("--model_head", type=str, default="none", choices=MHEADS.keys())
     p.add_argument("--horizon", type=int, default=1)
     p.add_argument("--rank", type=int, default=1)
     # data
