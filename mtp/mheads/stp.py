@@ -14,8 +14,7 @@ class STP(AbstractDisributionHead):
 
     def forward(self, x, y=None):
         logits = self.head(x)
+        loss = None
         if y is not None:
             loss = torch.nn.functional.cross_entropy(logits, y)
-            return AbstractDisributionHeadOutput(logits=logits, loss=loss)
-        else:
-            return AbstractDisributionHeadOutput(logits=logits)
+        return AbstractDisributionHeadOutput(logits=logits, loss=loss)

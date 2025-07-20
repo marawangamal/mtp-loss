@@ -8,6 +8,8 @@ import torch
 class AbstractDisributionHeadConfig:
     d_model: int
     d_output: int  # e.g. vocab size
+    horizon: int
+    rank: int
 
 
 @dataclass
