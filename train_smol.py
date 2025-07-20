@@ -29,6 +29,10 @@ from transformers import (
 from transformers.data.data_collator import DataCollatorForLanguageModeling
 
 
+# TODO:
+# [ ] remove intermediate mthf model
+# [ ] simply replace lm_head with mhead (add @property .weight for compatibility)
+
 from mtp._types import ModelHeadType
 from mtp.mthf import MultiTokenHFConfig, MultiTokenHF
 
@@ -51,20 +55,22 @@ PRETRAINING_DS_CONFIG = {
 
 class LitLM(pl.LightningModule):
     def __init__(
-        self, model_name, model_head: ModelHeadType = "stp", lr=5e-5, **kwargs
+        self,
+        model_name,
+        model_head: ModelHeadType = "stp",
+        rank: int = 1,
+        horizon: int = 1,
+        lr=5e-5,
+        **kwargs,
     ):
         super().__init__()
         self.save_hyperparameters()
-
-        # Old
-        # config = AutoConfig.from_pretrained(model_name)
-        # # override config
-        # for k, v in kwargs.items():
-        #     setattr(config, k, v)
-        # self.model = AutoModelForCausalLM.from_config(config)
-
-        # New
-        config = MultiTokenHFConfig(model_name=model_name, model_head=model_head)
+        config = MultiTokenHFConfig(
+            model_name=model_name,
+            model_head=model_head,
+            rank=rank,
+            horizon=horizon,
+        )
         self.model = MultiTokenHF(config, **kwargs)
 
     def forward(self, input_ids, attention_mask=None, labels=None):
@@ -229,10 +235,14 @@ def lookup_wandb_run(args: argparse.Namespace):
 # [ ] push to hub
 def main():
     p = argparse.ArgumentParser()
+    # model params
     p.add_argument("--model_name", type=str, default="HuggingFaceTB/SmolLM-135M")
     p.add_argument("--model_head", type=str, default="stp")  # new
+    p.add_argument("--horizon", type=int, default=1)
+    p.add_argument("--rank", type=int, default=1)
+    # data
     p.add_argument("--dataset_name", type=str, default="fineweb")
-    p.add_argument("--dataset_config", type=str, default="edu")
+    # optimization
     p.add_argument("--batch_size", type=int, default=32)
     p.add_argument("--max_length", type=int, default=1024)
     p.add_argument("--epochs", type=int, default=1)
@@ -249,7 +259,12 @@ def main():
         args.model_name,
         model_head=args.model_head,
         vocab_size=tokenizer.vocab_size,
+        horizon=args.horizon,
+        rank=args.rank,
     )
+
+    # print model
+    print(model)
 
     # maybe auto resume
     resume_ckpt = lookup_ckpt(args)
@@ -287,10 +302,10 @@ def main():
         default_root_dir=f"experiments/{get_econfig_name(args)}",
     )
 
-    # Tune lr
-    if not resume_ckpt:  # skip lr tuning if resuming from checkpoint
-        tuner = Tuner(trainer)
-        tuner.lr_find(model, dm)
+    # # Tune lr
+    # if not resume_ckpt:  # skip lr tuning if resuming from checkpoint
+    #     tuner = Tuner(trainer)
+    #     tuner.lr_find(model, dm)
 
     # Add evaluation callback after lr tuning
     trainer.callbacks.extend([eval_callback, ckpt_best_callback, ckpt_last_callback])

@@ -17,9 +17,17 @@ group:
   type: parallel
   jobs:
     - group:
-        name: "mthf"
+        name: "stp"
         type: sequential
         jobs:
           - job:
               preamble: glong
-              command: "HF_HOME=$SCRATCH/huggingface python train_smol.py"
+              command: "HF_HOME=$SCRATCH/huggingface python train_smol.py --model_head stp"
+
+    - group:
+        name: "multihead"
+        type: sequential
+        jobs:
+          - job:
+              preamble: glong
+              command: "HF_HOME=$SCRATCH/huggingface python train_smol.py --model_head multihead"
