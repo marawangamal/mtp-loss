@@ -9,7 +9,7 @@ from mtp.mheads._abc import (
 )
 
 
-class MultiHeadDist(AbstractDisributionHead):
+class Multihead(AbstractDisributionHead):
     def __init__(self, config: AbstractDisributionHeadConfig):
         """Simple multi-head distribution with independent linear heads for each position."""
         super().__init__(config)
@@ -22,6 +22,13 @@ class MultiHeadDist(AbstractDisributionHead):
             ]
         )
         self.decoder = nn.Linear(config.d_model, config.d_output)
+
+    def set_decoder(self, embeddings: torch.Tensor):
+        assert embeddings.shape == (
+            self.config.d_output,
+            self.config.d_model,
+        ), "embeddings shape must be (V, D)"
+        self.decoder.weight = embeddings  # (V, D)
 
     def forward(self, x, y=None):
         # if y is none (eval), only compute logits for the first head
@@ -40,7 +47,7 @@ class MultiHeadDist(AbstractDisributionHead):
 if __name__ == "__main__":
     B, H, D, V = 1, 5, 10, 32
     config = AbstractDisributionHeadConfig(d_model=D, d_output=V, horizon=H, rank=8)
-    head = MultiHeadDist(config)
+    head = Multihead(config)
     x = torch.randn(B, D)
     y = torch.randint(0, V, (B, H))
     assert head(x, y).logits.shape == (B, V), "logits should be (B, V)"

@@ -29,6 +29,7 @@ from transformers import (
 from transformers.data.data_collator import DataCollatorForLanguageModeling
 
 
+from mtp._types import ModelHeadType
 from mtp.mthf import MultiTokenHFConfig, MultiTokenHF
 
 PRETRAINING_DS_CONFIG = {
@@ -49,7 +50,9 @@ PRETRAINING_DS_CONFIG = {
 
 
 class LitLM(pl.LightningModule):
-    def __init__(self, model_name, lr=5e-5, **kwargs):
+    def __init__(
+        self, model_name, model_head: ModelHeadType = "stp", lr=5e-5, **kwargs
+    ):
         super().__init__()
         self.save_hyperparameters()
 
@@ -61,7 +64,7 @@ class LitLM(pl.LightningModule):
         # self.model = AutoModelForCausalLM.from_config(config)
 
         # New
-        config = MultiTokenHFConfig(model_name=model_name)
+        config = MultiTokenHFConfig(model_name=model_name, model_head=model_head)
         self.model = MultiTokenHF(config, **kwargs)
 
     def forward(self, input_ids, attention_mask=None, labels=None):
