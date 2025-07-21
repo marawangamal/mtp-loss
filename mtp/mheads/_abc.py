@@ -24,6 +24,14 @@ class AbstractDisributionHead(ABC, torch.nn.Module):
         self.config = config
 
     @abstractmethod
+    def set_output_embeddings(self, new_embeddings: torch.Tensor):
+        pass
+
+    @abstractmethod
+    def get_output_embeddings(self) -> torch.Tensor:
+        pass
+
+    @abstractmethod
     def forward(
         self, x: torch.Tensor, y: Optional[torch.Tensor] = None
     ) -> AbstractDisributionHeadOutput:

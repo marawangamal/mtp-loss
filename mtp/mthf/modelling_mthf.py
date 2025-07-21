@@ -58,11 +58,12 @@ class MultiTokenHF(PreTrainedModel, GenerationMixin):
         self.vocab_size = config.vocab_size or vocab_size  # override if provided
 
         # Set backbone
-        self.backbone, _ = get_backbone(
+        self.backbone, lm_head = get_backbone(
             config.model_name,
             config.pretrained,
             vocab_size=self.vocab_size,
         )
+        del lm_head
 
         # Set multi-token head
         self.mhead_config = AbstractDisributionHeadConfig(

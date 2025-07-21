@@ -34,6 +34,8 @@ from transformers.data.data_collator import DataCollatorForLanguageModeling
 
 from mtp.mthf import MultiTokenHFConfig, MultiTokenHF
 
+EXPERIMENTS_DIR = "experiments_debug"
+
 PRETRAINING_DS_CONFIG = {
     "fineweb": {
         "path": "HuggingFaceFW/fineweb",
@@ -55,15 +57,6 @@ class LitLM(pl.LightningModule):
     def __init__(self, model_name, model_head, vocab_size, lr=5e-5):
         super().__init__()
         self.save_hyperparameters()
-
-        # Old
-        # config = AutoConfig.from_pretrained(model_name)
-        # # override config
-        # for k, v in kwargs.items():
-        #     setattr(config, k, v)
-        # self.model = AutoModelForCausalLM.from_config(config)
-
-        # New
         config = MultiTokenHFConfig(
             model_name=model_name,
             model_head=model_head,
@@ -176,7 +169,6 @@ class HellaSwagEvalCallback(pl.Callback):
                 num_fewshot=0,
                 batch_size=2,
                 gen_kwargs={"max_new_tokens": 40},
-                limit=100,
             )
             if (
                 results
@@ -212,7 +204,7 @@ def get_econfig_name(args: argparse.Namespace):
 
 
 def lookup_ckpt(args: argparse.Namespace):
-    ckpt_path = f"experiments/{get_econfig_name(args)}/last.ckpt"
+    ckpt_path = f"{EXPERIMENTS_DIR}/{get_econfig_name(args)}/last.ckpt"
     if not os.path.exists(ckpt_path):
         return None
     return ckpt_path
@@ -233,10 +225,12 @@ def lookup_wandb_run(args: argparse.Namespace):
 # [ ] push to hub
 def main():
     p = argparse.ArgumentParser()
+    # model
     p.add_argument("--model_name", type=str, default="HuggingFaceTB/SmolLM-135M")
-    p.add_argument("--model_head", type=str, default="stp")  # new
+    p.add_argument("--model_head", type=str, default="stp")
+    # data
     p.add_argument("--dataset_name", type=str, default="fineweb")
-    p.add_argument("--dataset_config", type=str, default="edu")
+    # optimization
     p.add_argument("--batch_size", type=int, default=32)
     p.add_argument("--max_length", type=int, default=1024)
     p.add_argument("--epochs", type=int, default=1)
@@ -264,7 +258,7 @@ def main():
         wandb_id = lookup_wandb_run(args)
 
     # trainer + callbacks
-    eval_callback = HellaSwagEvalCallback(args.model_name, eval_every_n_batches=1000)
+    eval_callback = HellaSwagEvalCallback(args.model_name, eval_every_n_batches=5000)
     wandb_logger = WandbLogger(
         project="mtl",
         name=get_econfig_name(args),
@@ -272,14 +266,14 @@ def main():
         resume="allow",
     )
     ckpt_best_callback = ModelCheckpoint(
-        dirpath=f"experiments/{get_econfig_name(args)}",
+        dirpath=f"{EXPERIMENTS_DIR}/{get_econfig_name(args)}",
         filename="best",
         monitor="eval/hellaswag_acc_norm",
         mode="max",
         save_top_k=1,
     )
     ckpt_last_callback = ModelCheckpoint(
-        dirpath=f"experiments/{get_econfig_name(args)}",
+        dirpath=f"{EXPERIMENTS_DIR}/{get_econfig_name(args)}",
         filename="last",
         every_n_train_steps=1000,
     )
@@ -288,7 +282,7 @@ def main():
         max_epochs=args.epochs,
         accelerator="auto",
         logger=wandb_logger,
-        default_root_dir=f"experiments/{get_econfig_name(args)}",
+        default_root_dir=f"{EXPERIMENTS_DIR}/{get_econfig_name(args)}",
     )
 
     # Tune lr
