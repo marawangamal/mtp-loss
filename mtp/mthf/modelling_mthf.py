@@ -146,7 +146,7 @@ class MultiTokenHF(PreTrainedModel, GenerationMixin):
             return CausalLMOutput(loss=loss, logits=logits)
 
         # For inference: return logits from last position
-        output = self.mhead(z[:, -1:, :])
+        output = self.mhead(z)
         return CausalLMOutput(logits=output.logits)
 
 
