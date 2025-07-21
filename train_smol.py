@@ -54,13 +54,14 @@ PRETRAINING_DS_CONFIG = {
 
 
 class LitLM(pl.LightningModule):
-    def __init__(self, model_name, model_head, vocab_size, lr=5e-5):
+    def __init__(self, model_name, model_head, vocab_size, horizon, lr=5e-5):
         super().__init__()
         self.save_hyperparameters()
         config = MultiTokenHFConfig(
             model_name=model_name,
             model_head=model_head,
             vocab_size=vocab_size,
+            horizon=horizon,
         )
         self.model = MultiTokenHF(config)
 
@@ -228,6 +229,7 @@ def main():
     # model
     p.add_argument("--model_name", type=str, default="HuggingFaceTB/SmolLM-135M")
     p.add_argument("--model_head", type=str, default="stp")
+    p.add_argument("--horizon", type=int, default=1)
     # data
     p.add_argument("--dataset_name", type=str, default="fineweb")
     # optimization
@@ -247,6 +249,7 @@ def main():
         args.model_name,
         model_head=args.model_head,
         vocab_size=tokenizer.vocab_size,
+        horizon=args.horizon,
     )
 
     # maybe auto resume
