@@ -4,6 +4,9 @@ Usage:
     python train_smol.py --model_name distilbert/distilgpt2 --dataset_name wikitext --max_length 32 --epochs 1 --batch_size 1
 """
 
+# TODO:
+# [ ] add qualitative evaluation / logging (ie., x="the world is")
+
 import os
 import re
 import argparse
@@ -31,6 +34,8 @@ from transformers.data.data_collator import DataCollatorForLanguageModeling
 
 from mtp.mthf import MultiTokenHFConfig, MultiTokenHF
 
+EXPERIMENTS_DIR = "experiments_debug"
+
 PRETRAINING_DS_CONFIG = {
     "fineweb": {
         "path": "HuggingFaceFW/fineweb",
@@ -49,20 +54,16 @@ PRETRAINING_DS_CONFIG = {
 
 
 class LitLM(pl.LightningModule):
-    def __init__(self, model_name, lr=5e-5, **kwargs):
+    def __init__(self, model_name, model_head, vocab_size, horizon, lr=5e-5):
         super().__init__()
         self.save_hyperparameters()
-
-        # Old
-        # config = AutoConfig.from_pretrained(model_name)
-        # # override config
-        # for k, v in kwargs.items():
-        #     setattr(config, k, v)
-        # self.model = AutoModelForCausalLM.from_config(config)
-
-        # New
-        config = MultiTokenHFConfig(model_name=model_name)
-        self.model = MultiTokenHF(config, **kwargs)
+        config = MultiTokenHFConfig(
+            model_name=model_name,
+            model_head=model_head,
+            vocab_size=vocab_size,
+            horizon=horizon,
+        )
+        self.model = MultiTokenHF(config)
 
     def forward(self, input_ids, attention_mask=None, labels=None):
         return self.model(
@@ -169,7 +170,6 @@ class HellaSwagEvalCallback(pl.Callback):
                 num_fewshot=0,
                 batch_size=2,
                 gen_kwargs={"max_new_tokens": 40},
-                limit=100,
             )
             if (
                 results
@@ -205,7 +205,7 @@ def get_econfig_name(args: argparse.Namespace):
 
 
 def lookup_ckpt(args: argparse.Namespace):
-    ckpt_path = f"experiments/{get_econfig_name(args)}/last.ckpt"
+    ckpt_path = f"{EXPERIMENTS_DIR}/{get_econfig_name(args)}/last.ckpt"
     if not os.path.exists(ckpt_path):
         return None
     return ckpt_path
@@ -226,10 +226,13 @@ def lookup_wandb_run(args: argparse.Namespace):
 # [ ] push to hub
 def main():
     p = argparse.ArgumentParser()
+    # model
     p.add_argument("--model_name", type=str, default="HuggingFaceTB/SmolLM-135M")
-    p.add_argument("--model_head", type=str, default="stp")  # new
+    p.add_argument("--model_head", type=str, default="stp")
+    p.add_argument("--horizon", type=int, default=1)
+    # data
     p.add_argument("--dataset_name", type=str, default="fineweb")
-    p.add_argument("--dataset_config", type=str, default="edu")
+    # optimization
     p.add_argument("--batch_size", type=int, default=32)
     p.add_argument("--max_length", type=int, default=1024)
     p.add_argument("--epochs", type=int, default=1)
@@ -246,6 +249,7 @@ def main():
         args.model_name,
         model_head=args.model_head,
         vocab_size=tokenizer.vocab_size,
+        horizon=args.horizon,
     )
 
     # maybe auto resume
@@ -257,7 +261,7 @@ def main():
         wandb_id = lookup_wandb_run(args)
 
     # trainer + callbacks
-    eval_callback = HellaSwagEvalCallback(args.model_name, eval_every_n_batches=10)
+    eval_callback = HellaSwagEvalCallback(args.model_name, eval_every_n_batches=5000)
     wandb_logger = WandbLogger(
         project="mtl",
         name=get_econfig_name(args),
@@ -265,14 +269,14 @@ def main():
         resume="allow",
     )
     ckpt_best_callback = ModelCheckpoint(
-        dirpath=f"experiments/{get_econfig_name(args)}",
+        dirpath=f"{EXPERIMENTS_DIR}/{get_econfig_name(args)}",
         filename="best",
         monitor="eval/hellaswag_acc_norm",
         mode="max",
         save_top_k=1,
     )
     ckpt_last_callback = ModelCheckpoint(
-        dirpath=f"experiments/{get_econfig_name(args)}",
+        dirpath=f"{EXPERIMENTS_DIR}/{get_econfig_name(args)}",
         filename="last",
         every_n_train_steps=1000,
     )
@@ -281,7 +285,7 @@ def main():
         max_epochs=args.epochs,
         accelerator="auto",
         logger=wandb_logger,
-        default_root_dir=f"experiments/{get_econfig_name(args)}",
+        default_root_dir=f"{EXPERIMENTS_DIR}/{get_econfig_name(args)}",
     )
 
     # Tune lr
@@ -300,3 +304,7 @@ if __name__ == "__main__":
 
 # Epoch 0:   2%|██▉       | 5337/315209 [54:08<52:23:38,  1.64it/s, v_num=v874, train_loss_step=4.630]^C
 # Epoch 0:  21%|████████████████▋           | 16418/78803 [2:55:56<11:08:31,  1.56it/s, v_num=m7ey, train_loss_step=3.710]slurmstepd: error: container_p_join: open failed for /var/opt/slurm/localstorage/7233753/.ns: No such file or directory
+
+# Single gpu
+# Epoch 0:   0%|▏      | 171/157605 [01:39<25:29:40,  1.72it/s, v_num=06tw, train_loss_step=6.970]
+# BFloat16 and Float
